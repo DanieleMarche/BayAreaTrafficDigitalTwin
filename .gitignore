@@ -13,3 +13,6 @@ __pycache__/
 mosquitto/config/pwfile
 mosquitto/data/
 mosquitto/log/
+
+# Pems bay dataset is too big to be uploaded to GitHub, then its ignored
+*.h5
