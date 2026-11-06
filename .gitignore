@@ -1,0 +1,15 @@
+# Python venv
+.venv/
+venv/
+
+# File gerated by Pyhton
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+
+# Mosquitto
+mosquitto/config/pwfile
+mosquitto/data/
+mosquitto/log/
