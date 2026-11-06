@@ -1,0 +1,16 @@
+1793982986: mosquitto version 2.1.2 starting
+1793982986: Config loaded from /mosquitto/config/mosquitto.conf.
+1793982986: Bridge support available.
+1793982986: Persistence support available.
+1793982986: TLS support available.
+1793982986: TLS-PSK support available.
+1793982986: Websockets support available.
+1793982986: Warning: File /mosquitto/config/pwfile has world readable permissions. Future versions will refuse to load this file.
+To fix this, use `chmod 0700 /mosquitto/config/pwfile`.
+
+1793982986: Plugin builtin-security has registered to receive 'basic-auth' events.
+1793982986: Opening ipv4 listen socket on port 1883.
+1793982986: Opening ipv6 listen socket on port 1883.
+1793982986: Opening ipv4 listen socket on port 9001.
+1793982986: Opening ipv6 listen socket on port 9001.
+1793982986: mosquitto version 2.1.2 running
