@@ -6,6 +6,9 @@ pandas>=2.0
 numpy>=1.24
 h5py>=3.9
  
+confluent-kafka
+networkx
+
 # InfluxDB 3 client (imported as influxdb_client_3)
 influxdb3-python>=0.10
  
