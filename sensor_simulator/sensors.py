@@ -39,12 +39,12 @@ import time
 import re
 from datetime import datetime
 from typing import Iterable
-from zoneinfo import ZoneInfo
 
 from confluent_kafka import Producer
 
-# Dataset timestamps are Bay Area local time without a time zone.
-DATA_TZ = ZoneInfo("America/Los_Angeles")
+# All reading timestamps must be timezone-aware datetimes (the producer converts
+# traffic and weather to America/Los_Angeles), so that T - T0 is real elapsed time
+# also across daylight saving time changes.
 
 
 # --------------------------------------------------------------------------- #
@@ -56,6 +56,8 @@ class ReplayClock:
     def __init__(self, dataset_start: datetime, speed: float = 1.0):
         if speed <= 0:
             raise ValueError("speed must be > 0")
+        if dataset_start.tzinfo is None:
+            raise ValueError("dataset_start must be timezone-aware")
         self.T0 = dataset_start          # dataset start (simulated time)
         self.speed = speed               # replay multiplier
         self.t0: float | None = None     # replay start (wall-clock)
@@ -137,7 +139,7 @@ class Sensor(threading.Thread):
             "sensor_id": self.sensor_id,
             "sensor_type": self.sensor_type,
             "mode": self.mode,
-            "ts": T.replace(tzinfo=DATA_TZ).isoformat(),  # ORIGINAL dataset timestamp
+            "ts": T.isoformat(),  # ORIGINAL dataset timestamp, ISO-8601 with offset
             "value": value,
             "unit": self.unit,
             "emitted_at": time.time(),   # real send time: lets consumers measure latency
@@ -159,7 +161,7 @@ class Sensor(threading.Thread):
 
     def _publish(self, T: datetime, value: float) -> None:
         payload = json.dumps(self.build_payload(T, value)).encode("utf-8")
-        event_time_ms = int(T.replace(tzinfo=DATA_TZ).timestamp() * 1000)
+        event_time_ms = int(T.timestamp() * 1000)
         while True:
             try:
                 self.producer.produce(
