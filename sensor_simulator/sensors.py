@@ -36,6 +36,7 @@ import json
 import math
 import threading
 import time
+import re
 from datetime import datetime
 from typing import Iterable
 from zoneinfo import ZoneInfo
@@ -212,9 +213,16 @@ class WeatherSensor(Sensor):
     TOPIC_PREFIX = "weather"
 
     def __init__(self, station, variable, readings, clock, producer, run_id,
-                 unit: str | None = None, mode: str = Sensor.MODE_PERIODIC):
+                unit: str | None = None, mode: str = Sensor.MODE_PERIODIC):
         self.station = station
+        if not station.strip():
+            raise ValueError("station name cannot be empty") # Validate station and variable names before constructing the Kafka topic.
+        
         self.variable = variable
+        if not variable.strip():
+            raise ValueError("variable name cannot be empty")
+        if not re.fullmatch(r"[a-zA-Z0-9._-]+", station) or not re.fullmatch(r"[a-zA-Z0-9._-]+", variable):
+            raise ValueError("station and variable names must contain only [a-zA-Z0-9._-]") #Ensure station and variable names contain only Kafka-compatible characters.
         self.mode = mode          # already needed by is_valid() during super().__init__
         super().__init__(
             sensor_id=f"{station}-{variable}",
@@ -240,3 +248,4 @@ class WeatherSensor(Sensor):
         payload["station"] = self.station
         payload["variable"] = self.variable
         return payload
+
