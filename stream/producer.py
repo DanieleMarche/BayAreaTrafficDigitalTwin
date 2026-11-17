@@ -1,6 +1,5 @@
 import sys
 import time
-import json
 import h5py
 import pandas as pd
 from pathlib import Path
@@ -11,15 +10,17 @@ from datetime import datetime, timezone
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
-from sensor_simulator.sensors import ReplayClock, Sensor, WeatherSensor  # noqa: E402
+from sensor_simulator.sensors import ReplayClock, Sensor, TrafficSensor, WeatherSensor  # noqa: E402
 
 # === CONFIGURATION ===
 BOOTSTRAP_SERVERS = 'localhost:9092'
 REPLAY_SPEED = 60.0  # 60x speed: 5 minutes of data replayed in 5 seconds
 RUN_ID = str(uuid.uuid4())
 
-TRAFFIC_H5 = ROOT_DIR / "data" / "pems-bay.h5"
-WEATHER_CSV = ROOT_DIR / "data" / "SJC.csv"
+TRAFFIC_H5 = ROOT_DIR / "data" / "original_datasets" / "pems-bay.h5"
+WEATHER_CSV = ROOT_DIR / "data" / "original_datasets" / "SJC.csv"
+SENSORS_SUBSET = ROOT_DIR / "data" / "processing" / "pems-bay-sensors-subset.csv"
+
 WEATHER_TIMESTAMP_COL = "valid"
 WEATHER_STATION_COL = "station"
 # Time zone of the replay; all published timestamps are ISO-8601 with offset
@@ -37,13 +38,18 @@ WEATHER_UNITS = {
     "gust": "mph",            # wind gust
     "peak_wind_gust": "mph",  # peak wind gust
 }
-# Variables published only when the event happens (value != 0)
-WEATHER_EVENT_VARIABLES = {"p01m"}
+# Variables published only when the event happens:
+#   p01m                  -> only when it rains (value != 0)
+#   gust, peak_wind_gust  -> reported by the station only when a gust occurs
+#                            (~7% / ~3% of the observations; 'M' otherwise)
+WEATHER_EVENT_VARIABLES = {"p01m", "gust", "peak_wind_gust"}
 
 print(f"Starting replay run: {RUN_ID}")
-# Step 1 Compliance: Filter down to a manageable spatial network sub-grid (e.g., 5 sensors)
-SELECTED_SENSORS = [400001, 400017, 400030, 400040, 400045]
-SENSOR_TOPICS = [f"sensor-{s}" for s in SELECTED_SENSORS]
+
+# Step 1 Compliance: Filter down to the selected sensors 
+SELECTED_SENSORS = pd.read_csv(SENSORS_SUBSET)['sensor_id'].tolist()
+# LEGACY (no longer used): old traffic topics, now TrafficSensor publishes on traffic.<id>.speed
+# SENSOR_TOPICS = [f"sensor-{s}" for s in SELECTED_SENSORS]
 
 # Initialize Kafka Client
 producer = Producer({'bootstrap.servers': BOOTSTRAP_SERVERS})
@@ -105,10 +111,26 @@ for col in weather_columns:
 for s in weather_sensors:
     print(f"  {s}")
 
+# === TRAFFIC SENSORS ===
+# One TrafficSensor (and therefore one topic, traffic.<id>.speed) per PEMS-BAY detector
+traffic_sensors: list[TrafficSensor] = [
+    TrafficSensor(
+        sensor_id=sensor_id,
+        readings=Sensor.readings_from_series(df[sensor_id]),
+        clock=clock, producer=producer, run_id=RUN_ID,
+    )
+    for sensor_id in SELECTED_SENSORS
+]
+
+for s in traffic_sensors:
+    print(f"  {s}")
+
+all_sensors: list[Sensor] = traffic_sensors + weather_sensors
+
 # Auto-create the unique topics if they don't exist
 try:
     admin_client = AdminClient({'bootstrap.servers': BOOTSTRAP_SERVERS})
-    all_topics = SENSOR_TOPICS + [s.topic for s in weather_sensors]
+    all_topics = [s.topic for s in all_sensors]
     new_topics = [NewTopic(topic, num_partitions=1, replication_factor=1) for topic in all_topics]
     admin_client.create_topics(new_topics)
     print("Kafka topics verified/created.")
@@ -120,50 +142,77 @@ print(f"Starting historical replay at {REPLAY_SPEED}x speed...")
 # Single wall-clock origin t0 (shared ReplayClock) for traffic and weather,
 # set slightly in the future so that all streams start aligned
 clock.start(delay_s=1.0)
-for s in weather_sensors:
+for s in all_sensors:
     s.start()
 
-# === TRAFFIC REPLAY (unchanged) ===
+# === LEGACY TRAFFIC REPLAY (no longer used) ===
+# Replaced by the TrafficSensor threads above. To re-enable it, also restore
+# `import json` and SENSOR_TOPICS (and add SENSOR_TOPICS to all_topics).
+#
+# try:
+#     for T, row in df.iterrows():
+#         # Exact wall-clock target time from the shared clock:
+#         # t_target = t0 + (T - T0) / speed
+#         t_target = clock.wall_time(T.to_pydatetime())
+#
+#         # Wait until wall-clock time catches up to the target cadence
+#         delay = t_target - time.monotonic()
+#         if delay > 0:
+#             time.sleep(delay)
+#
+#         # Step 2 Compliance: Publish each sensor reading as an individual message to its OWN topic
+#         for sensor_id, speed_val in row.items():
+#             topic_name = f"sensor-{sensor_id}"
+#
+#             payload = {
+#                 "run_id": RUN_ID,
+#                 "sensor_id": int(sensor_id),
+#                 "timestamp": T.isoformat(),
+#                 "speed": float(speed_val)
+#             }
+#
+#             producer.produce(
+#                 topic=topic_name,
+#                 key=str(sensor_id).encode('utf-8'),
+#                 value=json.dumps(payload).encode('utf-8')
+#             )
+#
+#         # also serves the delivery callbacks of the weather sensors
+#         producer.poll(0)
+#         print(f"[Replay Time: {T}] Broadcasted individual streams for {len(SELECTED_SENSORS)} sensors.")
+# except KeyboardInterrupt:
+#     print("Stopping replay...")
+# finally:
+#     for s in weather_sensors:
+#         s.stop()
+#     for s in weather_sensors:
+#         s.join()
+#     producer.flush()
+
+# === REPLAY ===
+# Every sensor (traffic and weather) is its own thread publishing on its own topic.
+# The main thread only serves the delivery callbacks and reports progress.
+PROGRESS_EVERY_S = 5.0
 try:
-    for T, row in df.iterrows():
-        # Exact wall-clock target time from the shared clock:
-        # t_target = t0 + (T - T0) / speed
-        t_target = clock.wall_time(T.to_pydatetime())
-
-        # Wait until wall-clock time catches up to the target cadence
-        delay = t_target - time.monotonic()
-        if delay > 0:
-            time.sleep(delay)
-
-        # Step 2 Compliance: Publish each sensor reading as an individual message to its OWN topic
-        for sensor_id, speed_val in row.items():
-            topic_name = f"sensor-{sensor_id}"
-
-            payload = {
-                "run_id": RUN_ID,
-                "sensor_id": int(sensor_id),
-                "timestamp": T.isoformat(),
-                "speed": float(speed_val)
-            }
-
-            producer.produce(
-                topic=topic_name,
-                key=str(sensor_id).encode('utf-8'),
-                value=json.dumps(payload).encode('utf-8')
-            )
-
-        # also serves the delivery callbacks of the weather sensors
-        producer.poll(0)
-        print(f"[Replay Time: {T}] Broadcasted individual streams for {len(SELECTED_SENSORS)} sensors.")
+    last_report = time.monotonic()
+    while any(s.is_alive() for s in all_sensors):
+        producer.poll(0.5)
+        if time.monotonic() - last_report >= PROGRESS_EVERY_S:
+            last_report = time.monotonic()
+            published = sum(s.published for s in traffic_sensors)
+            print(f"[Replay] traffic messages published: {published}")
 except KeyboardInterrupt:
     print("Stopping replay...")
 finally:
-    for s in weather_sensors:
+    for s in all_sensors:
         s.stop()
-    for s in weather_sensors:
+    for s in all_sensors:
         s.join()
     producer.flush()
 
+print("Traffic sensors:")
+for s in traffic_sensors:
+    print(f"  {s.topic}: published={s.published} failed={s.failed} max_lag={s.max_lag_s:.3f}s")
 print("Weather sensors:")
 for s in weather_sensors:
     print(f"  {s.topic}: published={s.published} failed={s.failed} max_lag={s.max_lag_s:.3f}s")

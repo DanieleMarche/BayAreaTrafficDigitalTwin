@@ -1,27 +1,25 @@
 import json
+from pathlib import Path
 import networkx as nx
+import pandas as pd
 from confluent_kafka import Consumer, KafkaError, TopicPartition, OFFSET_BEGINNING
 # we need to install openmaps later osmnx
 # 1. Configuration
 BOOTSTRAP_SERVERS = 'localhost:9092'
-SELECTED_SENSORS = [400001, 400017, 400030, 400040, 400045]
-SENSOR_TOPICS = [f"sensor-{s}" for s in SELECTED_SENSORS]
+ROOT_DIR = Path(__file__).resolve().parent.parent
+SENSORS_SUBSET = ROOT_DIR / "data" / "processing" / "pems-bay-sensors-subset.csv"
+# Same sensor subset replayed by stream/producer.py
+SELECTED_SENSORS = pd.read_csv(SENSORS_SUBSET)['sensor_id'].tolist()
+# Topics written by sensor_simulator.sensors.TrafficSensor: traffic.<sensor_id>.speed
+SENSOR_TOPICS = [f"traffic.{s}.speed" for s in SELECTED_SENSORS]
 
 # 2. Step 3 Representation Model: Initialize the Spatial Graph Topology
 G = nx.DiGraph()
 
-# Add our 5 nodes with placeholder coordinates (lat, lon) for the OpenMaps layer later
+# One node per sensor; coordinates (lat, lon) are filled in later by the OpenMaps layer
 # We also attach an initial real-time state dictionary to each node
-placeholder_coords = {
-    400001: (37.7749, -122.4194),  # Placeholder San Francisco coords
-    400017: (37.7750, -122.4180),
-    400030: (37.7760, -122.4170),
-    400040: (37.7770, -122.4160),
-    400045: (37.7780, -122.4150),
-}
-
 for sensor_id in SELECTED_SENSORS:
-    lat, lon = placeholder_coords[sensor_id]
+    lat, lon = None, None
     G.add_node(sensor_id, 
                lat=lat, 
                lon=lon, 
@@ -73,9 +71,10 @@ try:
         # Parse the incoming sensor message
         data = json.loads(msg.value().decode('utf-8'))
         run_id = data.get("run_id", "unknown")
-        sensor_id = data['sensor_id']
-        timestamp = data['timestamp']
-        speed = data['speed']
+        # TrafficSensor payload: sensor_id is a string, the reading is in 'value', time in 'ts'
+        sensor_id = int(data['sensor_id'])
+        timestamp = data['ts']
+        speed = data['value']
         
         # 4. Update the Representation Model State
         # Derive higher-level context from raw numbers as required by Step 3
