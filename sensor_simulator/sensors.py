@@ -1,10 +1,9 @@
 """
-sensors.py — Virtual weather sensors for the historical replay (Digital Twin, Step 2),
-publishing to Apache Kafka.
+sensors.py — Virtual weather and traffic sensors for the historical replay
+(Digital Twin, Step 2), publishing to Apache Kafka.
 
-NOTE: for now only the weather stream uses these classes. The traffic stream
-(PEMS-BAY) is still replayed by the original loop in stream/producer.py, on
-topics sensor-<id>.
+stream/producer.py replays both streams with these classes: one TrafficSensor
+per PEMS-BAY detector and one WeatherSensor per weather variable.
 
 Requirements covered
 --------------------
@@ -26,6 +25,7 @@ Sensors
 | WeatherSensor  | ONE variable of ONE station       | periodic  | weather.<station>.<variable>  |
 |                | (e.g. temperature at SJC)         | or event  |                               |
 |                |                                   | (config.) |                               |
+| TrafficSensor  | speed of ONE PEMS-BAY detector    | periodic  | traffic.<sensor_id>.speed     |
 
 Kafka topic names may contain only [a-zA-Z0-9._-]: '/' (MQTT style) is not allowed.
 '_' is avoided on purpose, because Kafka warns about names that mix '.' and '_'.
@@ -206,8 +206,9 @@ class WeatherSensor(Sensor):
     Each variable is a separate sensor: no per-station aggregation.
     Mode: configurable.
       - periodic: publishes every observation (e.g. temperature, wind)
-      - event:    publishes only when the event occurs, i.e. value != 0
-                  (e.g. precipitation: a message only when it rains)
+      - event:    publishes only when the event occurs, i.e. value present and != 0
+                  (e.g. precipitation: a message only when it rains;
+                  wind gust / peak wind gust: a message only when a gust is reported)
     Topic: weather.<station>.<variable>
     """
 
@@ -249,5 +250,47 @@ class WeatherSensor(Sensor):
         payload = super().build_payload(T, value)
         payload["station"] = self.station
         payload["variable"] = self.variable
+        return payload
+
+
+class TrafficSensor(Sensor):
+    """
+    A single PEMS-BAY loop detector, measuring average speed.
+    Mode: always periodic (one reading every 5 minutes).
+    Topic: traffic.<sensor_id>.speed
+    """
+
+    sensor_type = "traffic"
+    TOPIC_PREFIX = "traffic"
+    VARIABLE = "speed"
+
+    def __init__(self, sensor_id, readings, clock, producer, run_id,
+                 unit: str | None = "mph"):
+        if isinstance(sensor_id, bytes):        # h5 column labels may be bytes
+            sensor_id = sensor_id.decode("utf-8")
+        sensor_id = str(sensor_id).strip()
+        if not sensor_id:
+            raise ValueError("sensor_id cannot be empty")
+        if not re.fullmatch(r"[a-zA-Z0-9-]+", sensor_id):
+            # '.' and '_' excluded: '.' is the topic separator, '_' triggers Kafka warnings
+            raise ValueError("sensor_id must contain only [a-zA-Z0-9-]")
+        super().__init__(
+            sensor_id=sensor_id,
+            topic=f"{self.TOPIC_PREFIX}.{sensor_id}.{self.VARIABLE}",
+            readings=readings,
+            clock=clock,
+            producer=producer,
+            run_id=run_id,
+            mode=Sensor.MODE_PERIODIC,
+            unit=unit,
+        )
+
+    def is_valid(self, value) -> bool:
+        # a negative speed is physically impossible: treat it as a faulty reading
+        return super().is_valid(value) and float(value) >= 0.0
+
+    def build_payload(self, T, value):
+        payload = super().build_payload(T, value)
+        payload["variable"] = self.VARIABLE
         return payload
 
