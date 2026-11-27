@@ -11,7 +11,7 @@ BOOTSTRAP_SERVERS = 'localhost:9092'
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SENSORS_SUBSET = ROOT_DIR / "data" / "processing" / "pems-bay-sensors-subset.csv"
 # PEMS-BAY sensor coordinates (no header: sensor_id, lat, lon)
-SENSOR_LOCATIONS_FILE = ROOT_DIR / "data" / "original_datasets" / "graph_sensor_locations_bay.csv"
+SENSOR_LOCATIONS_FILE = ROOT_DIR / "data" / "graph_sensor_locations_bay.csv"
 # Local cache of the OSM road network, so it is downloaded only once
 ROAD_GRAPH_CACHE = ROOT_DIR / "data" / "processing" / "bay_road_network.graphml"
 # Set to True to print the road distance between every pair of sensors (slow)
@@ -73,6 +73,30 @@ nearest_edges = ox.distance.nearest_edges(road_graph, X=lons, Y=lats)
 sensor_ids = selected_locations["sensor_id"].tolist()
 sensor_to_road_node = dict(zip(sensor_ids, nearest_nodes))
 sensor_to_road_edge = {s: tuple(e) for s, e in zip(sensor_ids, nearest_edges)}
+
+# 5. Build sensor connectivity graph
+sensor_graph = nx.Graph()
+sensor_graph.add_nodes_from(sensor_to_road_edge.keys())
+
+for i, sensor_a in enumerate(sensor_ids):
+    u1, v1, key1 = sensor_to_road_edge[sensor_a]
+
+    for sensor_b in sensor_ids[i + 1:]:
+        u2, v2, key2 = sensor_to_road_edge[sensor_b]
+
+        # Connect sensors if their road segments share an endpoint
+        if {u1, v1} & {u2, v2}:
+            sensor_graph.add_edge(sensor_a, sensor_b)
+
+clusters = sorted(nx.connected_components(sensor_graph), key=len, reverse=True)
+
+print("\n--- SENSOR CONNECTIVITY ---")
+print(f"Total sensors: {len(sensor_ids)}")
+print(f"Connected clusters: {len(clusters)}")
+
+for i, cluster in enumerate(clusters, 1):
+    print(f"Cluster {i}: {len(cluster)} sensors")
+    print(sorted(cluster))
 
 print("\nSensor to road node mapping:")
 for sensor_id, road_node in sensor_to_road_node.items():
