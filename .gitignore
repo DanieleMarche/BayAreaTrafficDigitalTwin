@@ -16,3 +16,5 @@ mosquitto/log/
 
 # Pems bay dataset is too big to be uploaded to GitHub, then its ignored
 *.h5
+cache/
+*.graphml
