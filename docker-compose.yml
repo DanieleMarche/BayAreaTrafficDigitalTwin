@@ -23,6 +23,8 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      # Never delete messages by age: records carry 2017 event-time timestamps
+      KAFKA_LOG_RETENTION_MS: -1
 
   # Web UI to browse topics and messages: http://localhost:8080
   kafka-ui:
